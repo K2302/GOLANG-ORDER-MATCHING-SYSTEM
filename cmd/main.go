@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	db, err := sql.Open("mysql", "root:03111985@tcp(127.0.0.1:3306)/order_matching")
+	db, err := sql.Open("mysql", "root:your_password@tcp(127.0.0.1:3306)/order_matching")
 	if err != nil {
 		log.Fatal("Error opening DB:", err)
 	}
@@ -67,5 +67,6 @@ func main() {
 	r.GET("/orders", api.GetAllOrders)
 	r.GET("/orders/:orderId", api.GetOrderByID)
 	r.DELETE("/orders/:orderId", api.CancelOrder)
+	r.GET("/trades", api.GetTrades)
 	r.Run(":3000")
 }
