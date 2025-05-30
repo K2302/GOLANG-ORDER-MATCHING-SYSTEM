@@ -21,10 +21,11 @@ type BuyHeap []*OrderItem
 func (h BuyHeap) Len() int { return len(h) }
 func (h BuyHeap) Less(i, j int) bool {
 	if h[i].Order.Price == h[j].Order.Price {
-		return h[i].Timestamp.Before(h[j].Timestamp)
+		return h[i].Order.ID < h[j].Order.ID // Older order ID first (FIFO)
 	}
-	return h[i].Order.Price > h[j].Order.Price
+	return h[i].Order.Price > h[j].Order.Price // Higher price has priority
 }
+
 func (h BuyHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i]; h[i].Idx, h[j].Idx = i, j }
 func (h *BuyHeap) Push(x interface{}) { *h = append(*h, x.(*OrderItem)) }
 func (h *BuyHeap) Pop() interface{} {
@@ -40,10 +41,11 @@ type SellHeap []*OrderItem
 func (h SellHeap) Len() int { return len(h) }
 func (h SellHeap) Less(i, j int) bool {
 	if h[i].Order.Price == h[j].Order.Price {
-		return h[i].Timestamp.Before(h[j].Timestamp)
+		return h[i].Order.ID < h[j].Order.ID // Older order ID first (FIFO)
 	}
-	return h[i].Order.Price < h[j].Order.Price
+	return h[i].Order.Price < h[j].Order.Price // Lower price has priority
 }
+
 func (h SellHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i]; h[i].Idx, h[j].Idx = i, j }
 func (h *SellHeap) Push(x interface{}) { *h = append(*h, x.(*OrderItem)) }
 func (h *SellHeap) Pop() interface{} {
@@ -170,5 +172,5 @@ func (e *Engine) ForceAddOrder(o *models.Order) {
 }
 
 // Expose Buy/Sell heap for order book APIs
-func (e *Engine) BuyHeap() *BuyHeap  { return e.buyHeap }
+func (e *Engine) BuyHeap() *BuyHeap   { return e.buyHeap }
 func (e *Engine) SellHeap() *SellHeap { return e.sellHeap }
