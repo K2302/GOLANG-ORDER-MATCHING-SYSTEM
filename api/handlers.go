@@ -38,7 +38,6 @@ func PlaceOrder(c *gin.Context) {
         return
     }
 
-    // Default symbol if missing
     if order.Symbol == "" {
         order.Symbol = "XYZ"
     }
@@ -105,17 +104,20 @@ func PlaceOrder(c *gin.Context) {
         }
     }
 
-    // Update order remaining qty + status
-    status := "open"
-    if order.Quantity == 0 {
-        status = "filled"
+    // Determine status
+    finalStatus := "open"
+    if order.RemainingQuantity == 0 {
+        finalStatus = "filled"
+    } else if order.RemainingQuantity < order.Quantity {
+        finalStatus = "partially_filled"
     }
 
+    // Update remaining_quantity and status
     _, err = tx.Exec(`
         UPDATE orders
         SET remaining_quantity = ?, status = ?
         WHERE id = ?`,
-        order.Quantity, status, order.ID,
+        order.RemainingQuantity, finalStatus, order.ID,
     )
     if err != nil {
         tx.Rollback()
@@ -129,13 +131,12 @@ func PlaceOrder(c *gin.Context) {
     }
 
     c.JSON(http.StatusOK, gin.H{
-        "order_id": orderID,
-        "remaining_quantity": order.Quantity,
-        "status": status,
-        "trades": trades,
+        "order_id":           orderID,
+        "remaining_quantity": order.RemainingQuantity,
+        "status":             finalStatus,
+        "trades":             trades,
     })
 }
-
 
 // CancelOrder handles order cancellation
 func CancelOrder(c *gin.Context) {
