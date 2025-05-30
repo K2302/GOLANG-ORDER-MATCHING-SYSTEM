@@ -28,7 +28,6 @@ func main() {
 	// 🧠 Create matching engine
 	matchEngine := engine.NewEngine()
 
-
 	rows, err := db.Query(`
 	SELECT id, symbol, type, side, price, remaining_quantity
 	FROM orders
@@ -66,5 +65,7 @@ func main() {
 	r.POST("/orders", api.PlaceOrder)
 	r.GET("/orderbook", api.GetOrderBook)
 	r.GET("/orders", api.GetAllOrders)
+	r.GET("/orders/:orderId", api.GetOrderByID)
+	r.DELETE("/orders/:orderId", api.CancelOrder)
 	r.Run(":3000")
 }

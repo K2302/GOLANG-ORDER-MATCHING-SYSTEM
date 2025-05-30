@@ -145,10 +145,60 @@ func PlaceOrder(c *gin.Context) {
 		"trades":             trades,
 	})
 }
+func GetOrderByID(c *gin.Context) {
+	db := c.MustGet("db").(*sql.DB)
+	id := c.Param("orderId")
+
+	var order models.Order
+	err := db.QueryRow(`
+		SELECT id, symbol, type, side, price, initial_quantity, remaining_quantity, status
+		FROM orders
+		WHERE id = ?`, id).Scan(
+		&order.ID, &order.Symbol, &order.Type, &order.Side,
+		&order.Price, &order.Quantity, &order.RemainingQuantity, &order.Status,
+	)
+
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order"})
+		return
+	}
+
+	c.JSON(http.StatusOK, order)
+}
 
 func CancelOrder(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{"message": "CancelOrder not implemented"})
+	db := c.MustGet("db").(*sql.DB)
+	orderID := c.Param("orderId")
+
+	// Check if order exists and is cancelable
+	var status string
+	err := db.QueryRow(`SELECT status FROM orders WHERE id = ?`, orderID).Scan(&status)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order status"})
+		return
+	}
+
+	if status != "open" && status != "partially_filled" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Only open or partially_filled orders can be canceled"})
+		return
+	}
+
+	// Cancel order
+	_, err = db.Exec(`UPDATE orders SET status = 'canceled' WHERE id = ?`, orderID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to cancel order"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Order canceled successfully"})
 }
+
 func GetAllOrders(c *gin.Context) {
 	db := c.MustGet("db").(*sql.DB)
 
