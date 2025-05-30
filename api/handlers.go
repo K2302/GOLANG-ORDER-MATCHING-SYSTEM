@@ -13,16 +13,24 @@ import (
 func PlaceOrder(c *gin.Context) {
 	var order models.Order
 	if err := c.ShouldBindJSON(&order); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid order payload"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
 		return
 	}
 
-	if order.Type == "limit" && order.Price <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Limit order must have a positive price"})
+	if order.Quantity <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Quantity must be positive"})
 		return
 	}
-	if order.Type == "market" && order.Price > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Market order should not specify a price"})
+	if order.Type == "limit" && order.Price <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Limit order must have a valid price"})
+		return
+	}
+	if order.Type == "market" && order.Price != 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Market order should not specify price"})
+		return
+	}
+	if order.Side != "buy" && order.Side != "sell" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order side must be 'buy' or 'sell'"})
 		return
 	}
 	if order.Symbol == "" {
@@ -34,13 +42,14 @@ func PlaceOrder(c *gin.Context) {
 
 	tx, err := db.Begin()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to begin transaction"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Transaction begin failed"})
 		return
 	}
 
 	order.RemainingQuantity = order.Quantity
 	order.Status = "open"
 
+	// Insert new order into DB
 	res, err := tx.Exec(`
 		INSERT INTO orders (symbol, type, side, price, initial_quantity, remaining_quantity, status)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -49,13 +58,11 @@ func PlaceOrder(c *gin.Context) {
 	)
 	if err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert order"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Insert order failed"})
 		return
 	}
 	orderID, _ := res.LastInsertId()
 	order.ID = orderID
-
-	// Store original quantity BEFORE matching
 	originalQty := order.Quantity
 
 	// Perform matching
@@ -66,50 +73,47 @@ func PlaceOrder(c *gin.Context) {
 		return
 	}
 
+	// Insert trades and update matched orders
 	for _, t := range trades {
 		var buyID, sellID int64
 		if order.Side == "buy" {
-			buyID = t.OrderID
-			sellID = t.MatchedOrderID
+			buyID, sellID = t.OrderID, t.MatchedOrderID
 		} else {
-			buyID = t.MatchedOrderID
-			sellID = t.OrderID
+			buyID, sellID = t.MatchedOrderID, t.OrderID
 		}
 
 		_, err := tx.Exec(`
-			INSERT INTO trades (buy_order_id, sell_order_id, price, quantity)
-			VALUES (?, ?, ?, ?)`,
-			buyID, sellID, t.Price, t.Quantity,
+			INSERT INTO trades (buy_order_id, sell_order_id, price, quantity, traded_at)
+			VALUES (?, ?, ?, ?, ?)`,
+			buyID, sellID, t.Price, t.Quantity, t.TradedAt,
 		)
 		if err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert trade"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Insert trade failed"})
 			return
 		}
 
-		// Update matched order status + remaining quantity
+		matchedStatus := "open"
+		if t.MatchedRemainingQty == 0 {
+			matchedStatus = "filled"
+		} else if t.MatchedRemainingQty < t.MatchedInitialQty {
+			matchedStatus = "partially_filled"
+		}
+
 		_, err = tx.Exec(`
 			UPDATE orders
-			SET remaining_quantity = remaining_quantity - ?, 
-				status = CASE 
-					WHEN remaining_quantity - ? = 0 THEN 'filled'
-					WHEN remaining_quantity - ? < initial_quantity THEN 'partially_filled'
-					ELSE status
-				END
+			SET remaining_quantity = ?, status = ?
 			WHERE id = ?`,
-			t.Quantity, t.Quantity, t.Quantity, t.MatchedOrderID,
+			t.MatchedRemainingQty, matchedStatus, t.MatchedOrderID,
 		)
 		if err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update matched order"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Update matched order failed"})
 			return
 		}
 	}
 
-	// Update this order’s remaining quantity after matching
-	order.RemainingQuantity = order.Quantity
-
-	// Determine final status
+	// Update the new order’s final status
 	finalStatus := "open"
 	if order.RemainingQuantity == 0 {
 		finalStatus = "filled"
@@ -125,12 +129,12 @@ func PlaceOrder(c *gin.Context) {
 	)
 	if err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order status"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Update incoming order failed"})
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Transaction failed"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Transaction commit failed"})
 		return
 	}
 
@@ -142,7 +146,6 @@ func PlaceOrder(c *gin.Context) {
 	})
 }
 
-
 func CancelOrder(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{"message": "CancelOrder not implemented"})
 }
@@ -150,10 +153,11 @@ func GetAllOrders(c *gin.Context) {
 	db := c.MustGet("db").(*sql.DB)
 
 	rows, err := db.Query(`
-		SELECT id, symbol, side, type, price, initial_quantity, remaining_quantity, status
-		FROM orders
-		ORDER BY id DESC
-	`)
+    SELECT id, symbol, side, type, price, initial_quantity, remaining_quantity, status 
+    FROM orders
+    ORDER BY id DESC
+`)
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch orders"})
 		return

@@ -28,12 +28,12 @@ func main() {
 	// 🧠 Create matching engine
 	matchEngine := engine.NewEngine()
 
-	// 🔁 Reload order book
+
 	rows, err := db.Query(`
-		SELECT id, symbol, type, side, price, remaining_quantity
-		FROM orders
-		WHERE status IN ('open', 'partially_filled')
-	`)
+	SELECT id, symbol, type, side, price, remaining_quantity
+	FROM orders
+	WHERE status IN ('open', 'partially_filled')
+`)
 	if err != nil {
 		log.Fatal("Failed to load order book:", err)
 	}
@@ -41,14 +41,13 @@ func main() {
 
 	for rows.Next() {
 		var o models.Order
-		err := rows.Scan(&o.ID, &o.Symbol, &o.Type, &o.Side, &o.Price, &o.Quantity)
+		err := rows.Scan(&o.ID, &o.Symbol, &o.Type, &o.Side, &o.Price, &o.RemainingQuantity)
 		if err != nil {
 			log.Println("Skipping invalid order:", err)
 			continue
 		}
 		matchEngine.ForceAddOrder(&o)
 	}
-	log.Println("✅ Order book loaded into engine")
 
 	// Setup Gin
 	r := gin.Default()
