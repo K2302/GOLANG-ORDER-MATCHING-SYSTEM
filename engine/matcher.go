@@ -10,30 +10,23 @@ import (
 )
 
 type OrderItem struct {
-	Order     *models.Order  // ✅ Exported
-	Timestamp time.Time      // ✅ Exported
-	Idx       int            // ✅ Exported
+	Order     *models.Order
+	Timestamp time.Time
+	Idx       int
 }
 
-// BuyHeap = max-heap (higher price first)
+// Max-Heap for Buy Orders (higher price first)
 type BuyHeap []*OrderItem
 
 func (h BuyHeap) Len() int { return len(h) }
-
 func (h BuyHeap) Less(i, j int) bool {
 	if h[i].Order.Price == h[j].Order.Price {
 		return h[i].Timestamp.Before(h[j].Timestamp)
 	}
 	return h[i].Order.Price > h[j].Order.Price
 }
-
-func (h BuyHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-	h[i].Idx, h[j].Idx = i, j
-}
-
+func (h BuyHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i]; h[i].Idx, h[j].Idx = i, j }
 func (h *BuyHeap) Push(x interface{}) { *h = append(*h, x.(*OrderItem)) }
-
 func (h *BuyHeap) Pop() interface{} {
 	old := *h
 	item := old[len(old)-1]
@@ -41,25 +34,18 @@ func (h *BuyHeap) Pop() interface{} {
 	return item
 }
 
-// SellHeap = min-heap (lower price first)
+// Min-Heap for Sell Orders (lower price first)
 type SellHeap []*OrderItem
 
 func (h SellHeap) Len() int { return len(h) }
-
 func (h SellHeap) Less(i, j int) bool {
 	if h[i].Order.Price == h[j].Order.Price {
 		return h[i].Timestamp.Before(h[j].Timestamp)
 	}
 	return h[i].Order.Price < h[j].Order.Price
 }
-
-func (h SellHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-	h[i].Idx, h[j].Idx = i, j
-}
-
+func (h SellHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i]; h[i].Idx, h[j].Idx = i, j }
 func (h *SellHeap) Push(x interface{}) { *h = append(*h, x.(*OrderItem)) }
-
 func (h *SellHeap) Pop() interface{} {
 	old := *h
 	item := old[len(old)-1]
@@ -94,10 +80,11 @@ func (e *Engine) Match(o *models.Order) ([]*models.Trade, error) {
 
 	var trades []*models.Trade
 	now := time.Now()
+	remaining := o.Quantity
 
 	switch o.Side {
 	case "buy":
-		for o.Quantity > 0 && e.sellHeap.Len() > 0 {
+		for remaining > 0 && e.sellHeap.Len() > 0 {
 			best := heap.Pop(e.sellHeap).(*OrderItem)
 
 			if o.Type == "limit" && best.Order.Price > o.Price {
@@ -105,7 +92,7 @@ func (e *Engine) Match(o *models.Order) ([]*models.Trade, error) {
 				break
 			}
 
-			matchQty := min(o.Quantity, best.Order.Quantity)
+			matchQty := min(remaining, best.Order.Quantity)
 			trades = append(trades, &models.Trade{
 				OrderID:        o.ID,
 				MatchedOrderID: best.Order.ID,
@@ -114,7 +101,7 @@ func (e *Engine) Match(o *models.Order) ([]*models.Trade, error) {
 				TradedAt:       now,
 			})
 
-			o.Quantity -= matchQty
+			remaining -= matchQty
 			best.Order.Quantity -= matchQty
 
 			if best.Order.Quantity > 0 {
@@ -126,12 +113,12 @@ func (e *Engine) Match(o *models.Order) ([]*models.Trade, error) {
 			return nil, errors.New("market order could not be filled — no sell orders available")
 		}
 
-		if o.Type == "limit" && o.Quantity > 0 {
+		if o.Type == "limit" && remaining > 0 {
 			heap.Push(e.buyHeap, &OrderItem{Order: o, Timestamp: now})
 		}
 
 	case "sell":
-		for o.Quantity > 0 && e.buyHeap.Len() > 0 {
+		for remaining > 0 && e.buyHeap.Len() > 0 {
 			best := heap.Pop(e.buyHeap).(*OrderItem)
 
 			if o.Type == "limit" && best.Order.Price < o.Price {
@@ -139,7 +126,7 @@ func (e *Engine) Match(o *models.Order) ([]*models.Trade, error) {
 				break
 			}
 
-			matchQty := min(o.Quantity, best.Order.Quantity)
+			matchQty := min(remaining, best.Order.Quantity)
 			trades = append(trades, &models.Trade{
 				OrderID:        o.ID,
 				MatchedOrderID: best.Order.ID,
@@ -148,7 +135,7 @@ func (e *Engine) Match(o *models.Order) ([]*models.Trade, error) {
 				TradedAt:       now,
 			})
 
-			o.Quantity -= matchQty
+			remaining -= matchQty
 			best.Order.Quantity -= matchQty
 
 			if best.Order.Quantity > 0 {
@@ -160,7 +147,7 @@ func (e *Engine) Match(o *models.Order) ([]*models.Trade, error) {
 			return nil, errors.New("market order could not be filled — no buy orders available")
 		}
 
-		if o.Type == "limit" && o.Quantity > 0 {
+		if o.Type == "limit" && remaining > 0 {
 			heap.Push(e.sellHeap, &OrderItem{Order: o, Timestamp: now})
 		}
 
@@ -168,15 +155,20 @@ func (e *Engine) Match(o *models.Order) ([]*models.Trade, error) {
 		return nil, errors.New("invalid order side")
 	}
 
+	// Update remaining_quantity in caller
+	o.RemainingQuantity = remaining
 	return trades, nil
 }
-
-// ✅ Expose buyHeap for order book
-func (e *Engine) BuyHeap() *BuyHeap {
-	return e.buyHeap
+func (e *Engine) ForceAddOrder(o *models.Order) {
+	now := time.Now()
+	item := &OrderItem{Order: o, Timestamp: now}
+	if o.Side == "buy" {
+		heap.Push(e.buyHeap, item)
+	} else {
+		heap.Push(e.sellHeap, item)
+	}
 }
 
-// ✅ Expose sellHeap for order book
-func (e *Engine) SellHeap() *SellHeap {
-	return e.sellHeap
-}
+// Expose Buy/Sell heap for order book APIs
+func (e *Engine) BuyHeap() *BuyHeap  { return e.buyHeap }
+func (e *Engine) SellHeap() *SellHeap { return e.sellHeap }
