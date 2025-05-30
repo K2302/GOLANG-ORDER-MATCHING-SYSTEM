@@ -21,12 +21,10 @@ func PlaceOrder(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Limit order must have a positive price"})
 		return
 	}
-
 	if order.Type == "market" && order.Price > 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Market order should not specify a price"})
 		return
 	}
-
 	if order.Symbol == "" {
 		order.Symbol = "XYZ"
 	}
@@ -54,10 +52,13 @@ func PlaceOrder(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert order"})
 		return
 	}
-
 	orderID, _ := res.LastInsertId()
 	order.ID = orderID
 
+	// Store original quantity BEFORE matching
+	originalQty := order.Quantity
+
+	// Perform matching
 	trades, err := eng.Match(&order)
 	if err != nil {
 		tx.Rollback()
@@ -86,15 +87,15 @@ func PlaceOrder(c *gin.Context) {
 			return
 		}
 
-		// ✅ Also update matched order's status + remaining qty
+		// Update matched order status + remaining quantity
 		_, err = tx.Exec(`
 			UPDATE orders
 			SET remaining_quantity = remaining_quantity - ?, 
-			    status = CASE 
-				             WHEN remaining_quantity - ? = 0 THEN 'filled'
-				             WHEN remaining_quantity - ? < initial_quantity THEN 'partially_filled'
-				             ELSE status
-				         END
+				status = CASE 
+					WHEN remaining_quantity - ? = 0 THEN 'filled'
+					WHEN remaining_quantity - ? < initial_quantity THEN 'partially_filled'
+					ELSE status
+				END
 			WHERE id = ?`,
 			t.Quantity, t.Quantity, t.Quantity, t.MatchedOrderID,
 		)
@@ -105,49 +106,15 @@ func PlaceOrder(c *gin.Context) {
 		}
 	}
 
-	// Capture the original quantity at the beginning
-	originalQty := order.Quantity
-
-	// ... matching logic happens ...
-	trades, err := eng.Match(&order)
-	// Now set RemainingQuantity to what's left after matching
+	// Update this order’s remaining quantity after matching
 	order.RemainingQuantity = order.Quantity
 
-	// Determine final status using original quantity
+	// Determine final status
 	finalStatus := "open"
 	if order.RemainingQuantity == 0 {
 		finalStatus = "filled"
 	} else if order.RemainingQuantity < originalQty {
 		finalStatus = "partially_filled"
-	}
-	originalQty := order.Quantity // store before matching
-	trades, err := eng.Match(&order)
-	// ...
-	order.RemainingQuantity = order.Quantity
-
-	finalStatus := "open"
-	if order.RemainingQuantity == 0 {
-		finalStatus = "filled"
-	} else if order.RemainingQuantity < originalQty {
-		finalStatus = "partially_filled"
-	}
-
-	_, err = tx.Exec(`
-	UPDATE orders
-	SET remaining_quantity = ?, status = ?
-	WHERE id = ?`,
-		order.RemainingQuantity, finalStatus, order.ID,
-	)
-	if err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order status"})
-		return
-	}
-
-	// Commit the transaction
-	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Transaction failed"})
-		return
 	}
 
 	_, err = tx.Exec(`
@@ -174,6 +141,7 @@ func PlaceOrder(c *gin.Context) {
 		"trades":             trades,
 	})
 }
+
 
 func CancelOrder(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{"message": "CancelOrder not implemented"})
